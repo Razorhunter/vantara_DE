@@ -1,0 +1,10 @@
+[package]
+name = "vantara_de"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+drm = "0.14.1"
+nix = { version = "0.30.1", features = ["fs"] }
+libc = "0.2"
+image = "0.25.6"
