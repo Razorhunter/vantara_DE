@@ -6,13 +6,13 @@ use std::fs::File;
 use std::os::fd::{AsFd, BorrowedFd};
 use drm::buffer::DrmFourcc;
 use std::fs;
-use std::io::Result;
 use nix::sys::stat::Mode;
 use nix::fcntl::{open as nix_open, OFlag};
 use std::os::unix::io::FromRawFd;
 use std::os::fd::IntoRawFd;
 use std::thread;
 use std::time::Duration;
+use wallpaper::{draw_wallpaper_to_framebuffer, WallpaperMode};
 
 pub struct DisplaySetup {
     pub connector: control::connector::Info,
@@ -31,8 +31,11 @@ impl BasicDevice for DrmDeviceWrapper {}
 impl ControlDevice for DrmDeviceWrapper {}
 
 const DEFAULT_GPU_DRIVE_PATH: &str = "/dev/dri";
+const DEFAULT_WALLPAPER_PATH: &str = "/usr/share/backgrounds/default-wallpaper.jpg";
 
-fn main() -> Result<()> {
+type MyResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+fn main() -> MyResult<()> {
     let path = find_drm_card().expect("/dev/dri/cardX not found!");
     println!("[OK] Found GPU device: {}", path);
 
@@ -67,13 +70,21 @@ fn main() -> Result<()> {
     let pixels = (width as usize) * (height as usize);
     println!("[OK] Framebuffer pixels: {}", pixels);
 
-    // for i in 0..pixels {
-    //     let offset = i * 4;
-    //     framebuffer[offset] = 0xFF;        // Blue (255)
-    //     framebuffer[offset + 1] = 0x99;    // Green (153)
-    //     framebuffer[offset + 2] = 0x33;    // Red (51)
-    //     framebuffer[offset + 3] = 0x00;    // X / Alpha (tak guna)
-    // }
+    //Default background color
+    for i in 0..pixels {
+        let offset = i * 4;
+        framebuffer[offset] = 0xFF;        // Blue (255)
+        framebuffer[offset + 1] = 0x99;    // Green (153)
+        framebuffer[offset + 2] = 0x33;    // Red (51)
+        framebuffer[offset + 3] = 0x00;    // X / Alpha (tak guna)
+    }
+    draw_wallpaper_to_framebuffer(
+        framebuffer,
+        width as usize,
+        height as usize,
+        DEFAULT_WALLPAPER_PATH,
+        WallpaperMode::Fill,
+    )?;
 
     drm.set_crtc(setup.crtc, Some(fb), (0, 0), &[setup.connector.handle()], Some(*mode))?;
 
