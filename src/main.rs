@@ -1,148 +1,72 @@
-mod wallpaper;
+mod display;
+mod graphics;
+mod input;
 
-use drm::control::{self, ResourceHandles, Device as ControlDevice};
-use drm::Device as BasicDevice;
-use std::fs::File;
-use std::os::fd::{AsFd, BorrowedFd};
-use drm::buffer::DrmFourcc;
-use std::fs;
-use nix::sys::stat::Mode;
-use nix::fcntl::{open as nix_open, OFlag};
-use std::os::unix::io::FromRawFd;
-use std::os::fd::IntoRawFd;
+use display::drm_device::DrmDeviceWrapper;
+use display::find_best_display_setup;
+use display::framebuffer::{create_and_draw_framebuffer};
+use display::utils::find_drm_card;
+
+use drm::control::Device;
 use std::thread;
 use std::time::Duration;
-use wallpaper::{draw_wallpaper_to_framebuffer, WallpaperMode};
 
-pub struct DisplaySetup {
-    pub connector: control::connector::Info,
-    pub encoder: control::encoder::Info,
-    pub crtc: control::crtc::Handle,
-}
-
-/// PEMBALUT struct untuk `drm-rs`
-struct DrmDeviceWrapper(File);
-impl AsFd for DrmDeviceWrapper {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.0.as_fd()
-    }
-}
-impl BasicDevice for DrmDeviceWrapper {}
-impl ControlDevice for DrmDeviceWrapper {}
-
-const DEFAULT_GPU_DRIVE_PATH: &str = "/dev/dri";
 const DEFAULT_WALLPAPER_PATH: &str = "/usr/share/backgrounds/default-wallpaper.jpg";
 
-type MyResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-fn main() -> MyResult<()> {
+fn main() -> display::MyResult<()> {
+    //Initialize Display
     let path = find_drm_card().expect("/dev/dri/cardX not found!");
-    println!("[OK] Found GPU device: {}", path);
 
-    let fd = nix_open(std::path::Path::new(&path), OFlag::O_RDWR, Mode::empty())
-        .expect("Failed to open GPU device with O_RDWR");
+    let drm = DrmDeviceWrapper::open(&path)?;
 
-    let file = unsafe { File::from_raw_fd(fd.into_raw_fd()) };
-
-    let drm = DrmDeviceWrapper(file);
-
-    let res = drm.resource_handles().unwrap();
-
+    let res = drm.resource_handles()?;
     let setup = find_best_display_setup(&drm, &res).expect("Failed to find connector/encoder/crtc");
 
     let mode = setup.connector.modes()
         .iter()
-        .find(|m| m.mode_type().contains(control::ModeTypeFlags::PREFERRED))
+        .find(|m| m.mode_type().contains(drm::control::ModeTypeFlags::PREFERRED))
         .unwrap_or_else(|| &setup.connector.modes()[0]);
 
     let (width, height) = mode.size();
-    println!("[OK] Display setup: {}x{} @ {}Hz", width, height, mode.vrefresh());
 
-    let mut dumb = drm.create_dumb_buffer((width.into(), height.into()), DrmFourcc::Xrgb8888, 32)?;
-
-    let fb = drm.add_framebuffer(&dumb, 24, 32)?;
-
-    let mut mapping = drm.map_dumb_buffer(&mut dumb)?;
-
-    let framebuffer = mapping.as_mut();
-    println!("[OK] Framebuffer size: {} bytes", framebuffer.len());
-
-    let pixels = (width as usize) * (height as usize);
-    println!("[OK] Framebuffer pixels: {}", pixels);
-
-    //Default background color
-    for i in 0..pixels {
-        let offset = i * 4;
-        framebuffer[offset] = 0xFF;        // Blue (255)
-        framebuffer[offset + 1] = 0x99;    // Green (153)
-        framebuffer[offset + 2] = 0x33;    // Red (51)
-        framebuffer[offset + 3] = 0x00;    // X / Alpha (tak guna)
-    }
-    draw_wallpaper_to_framebuffer(
-        framebuffer,
-        width as usize,
-        height as usize,
-        DEFAULT_WALLPAPER_PATH,
-        WallpaperMode::Fill,
-    )?;
+    let fb = create_and_draw_framebuffer(&drm, width, height, DEFAULT_WALLPAPER_PATH)?;
 
     drm.set_crtc(setup.crtc, Some(fb), (0, 0), &[setup.connector.handle()], Some(*mode))?;
 
+    //Initialize cursor
+    let mut dev = input::cursor::find_mouse_device();
+
+    let mut cursor_x = width as i32 / 2;
+    let mut cursor_y = height as i32 / 2;
+
+    let mut prev_cursor_pos = (cursor_x, cursor_y);
+
     loop {
-        thread::sleep(Duration::from_secs(1));
-    }
-}
-
-fn find_drm_card() -> Option<String> {
-    let entries = fs::read_dir(DEFAULT_GPU_DRIVE_PATH).ok()?;
-    for entry in entries {
-        let path = entry.ok()?.path();
-        if path.file_name()?.to_string_lossy().starts_with("card") {
-            return Some(path.to_string_lossy().to_string());
-        }
-    }
-    None
-}
-
-pub fn find_best_display_setup<T: ControlDevice>(dev: &T, res: &ResourceHandles,) -> Option<DisplaySetup> {
-    for &conn_handle in res.connectors() {
-        let conn_info = dev.get_connector(conn_handle, true).ok()?;
-
-        if conn_info.state() != control::connector::State::Connected {
-            continue;
-        }
-
-        let enc_handle = if let Some(e) = conn_info.current_encoder() {
-            e
-        } else if let Some(e) = conn_info.encoders().get(0) {
-            *e
-        } else {
-            continue;
-        };
-
-        let encoder = dev.get_encoder(enc_handle).ok()?;
-
-        if let Some(crtc) = encoder.crtc() {
-            return Some(DisplaySetup {
-                connector: conn_info,
-                encoder,
-                crtc,
-            });
-        }
-
-        let bitmask = unsafe { std::mem::transmute::<_, u32>(encoder.possible_crtcs()) };
-
-        for (i, &crtc_handle) in res.crtcs().iter().enumerate() {
-            if (bitmask & (1 << i)) != 0 {
-                return Some(DisplaySetup {
-                    connector: conn_info,
-                    encoder,
-                    crtc: crtc_handle,
-                });
+        for ev in dev.fetch_events().unwrap() {
+            match ev.kind() {
+                InputEventKind::RelAxis(axis) => match axis {
+                    evdev::RelativeAxisType::REL_X => {
+                        cursor_x += ev.value();
+                    }
+                    evdev::RelativeAxisType::REL_Y => {
+                        cursor_y += ev.value();
+                    }
+                    _ => {}
+                },
+                _ => {}
             }
-        }
-    }
 
-    println!("[WARN] No usable display setup found.");
-    None
+            // Clamp cursor within screen bounds
+            cursor_x = cursor_x.clamp(0, width as i32 - 1);
+            cursor_y = cursor_y.clamp(0, height as i32 - 1);
+        }
+
+        input::cursor::restore_cursor_area(framebuffer, width as usize, height as usize, prev_cursor_pos.0 as usize, prev_cursor_pos.1 as usize);
+
+        input::cursor::draw_cursor(framebuffer, width as usize, height as usize, cursor_x as usize, cursor_y as usize);
+
+        prev_cursor_pos = (cursor_x, cursor_y);
+
+        thread::sleep(Duration::from_millis(16)); // ~60 FPS
+    }
 }
