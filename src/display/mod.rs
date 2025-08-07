@@ -1,6 +1,5 @@
 pub mod drm_device;
 pub mod utils;
-pub mod framebuffer;
 
 use drm::control::{self, ResourceHandles, Device as ControlDevice};
 

@@ -7,6 +7,7 @@ pub fn find_drm_card() -> Option<String> {
     for entry in entries {
         let path = entry.ok()?.path();
         if path.file_name()?.to_string_lossy().starts_with("card") {
+            println!("[OK] Found display card device: {:?}", path);
             return Some(path.to_string_lossy().to_string());
         }
     }
