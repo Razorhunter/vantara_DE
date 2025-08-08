@@ -7,7 +7,7 @@ use display::find_best_display_setup;
 use display::utils::find_drm_card;
 use drm::control::Device as ControlDevice;
 use drm::buffer::DrmFourcc;
-use graphics::{draw_wallpaper_to_framebuffer, WallpaperMode};
+use graphics::wallpaper::{draw_wallpaper_to_framebuffer, WallpaperMode};
 use std::thread;
 use std::time::{Instant, Duration};
 
@@ -15,7 +15,7 @@ use evdev::EventType;
 
 const REL_X: u16 = 0x00;
 const REL_Y: u16 = 0x01;
-const DEFAULT_WALLPAPER_PATH: &str = "/usr/share/backgrounds/default-wallpapers.jpg";
+const DEFAULT_WALLPAPER_PATH: &str = "/usr/share/backgrounds/default-wallpaper.jpg";
 
 fn main() -> display::MyResult<()> {
     //Initialize Display
@@ -54,6 +54,16 @@ fn main() -> display::MyResult<()> {
             }
         }
     }
+
+    graphics::panel::draw_panels_to_framebuffer(
+        framebuffer,
+        width as usize,
+        height as usize,
+        35,
+        48,
+        (0x00, 0x00, 0xFF),
+        (0x00, 0x00, 0xFF),
+    );
 
     drm.set_crtc(setup.crtc, Some(fb), (0, 0), &[setup.connector.handle()], Some(*mode))?;
 
